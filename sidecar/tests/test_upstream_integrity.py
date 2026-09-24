@@ -23,3 +23,21 @@ UPSTREAM_SHA256 = {
 def test_upstream_file_is_byte_identical(name, expected):
     digest = hashlib.sha256((FORK_ROOT / name).read_bytes()).hexdigest()
     assert digest == expected, f"{name} differs from upstream {UPSTREAM_COMMIT}; never edit upstream files"
+
+
+VENDORED_SHA256 = {
+    "tools/schema_sanitizer.py": "8f58baf2faf47fe95b47d3372fc8a29ed13854ca0b192980fbb6041981c507cf",
+    "agent/reasoning_effort.py": "742bf0702d77d2a3db7853a1f0d23e8bdf9cb30b78c10135e8b9018517b4bb2d",
+}
+
+
+@pytest.mark.parametrize("name,expected", sorted(VENDORED_SHA256.items()))
+def test_vendored_shim_is_unmodified(name, expected):
+    assert hashlib.sha256((FORK_ROOT / name).read_bytes()).hexdigest() == expected
+
+
+def test_notice_names_both_shims():
+    text = (FORK_ROOT / "THIRD_PARTY_NOTICES.md").read_text()
+    assert "Copyright (c) 2025 Nous Research" in text
+    for name in VENDORED_SHA256:
+        assert name in text
