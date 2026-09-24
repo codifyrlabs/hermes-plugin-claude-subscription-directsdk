@@ -1,0 +1,91 @@
+"""Drives `claude auth login` on a pty: shows the URL, then feeds the code the owner pasted. Never logs either."""
+from __future__ import annotations
+
+import os
+import pty
+import re
+import select
+import subprocess
+import time
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
+URL = re.compile(r"https://[^\s\x1b\x07]+")
+CODE = re.compile(r"^[\x21-\x7e]{1,2048}$")
+
+
+class LoginError(RuntimeError):
+    pass
+
+
+def valid_code(code: str) -> bool:
+    return bool(CODE.fullmatch(code or ""))
+
+
+class LoginSession:
+    def __init__(self, command: list[str], env: dict[str, str], url_timeout: float = 30.0):
+        self.command, self.env, self.url_timeout = list(command), dict(env), url_timeout
+        self.proc: subprocess.Popen | None = None
+        self.master: int | None = None
+
+    def _read(self, deadline: float) -> str:
+        chunks = []
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([self.master], [], [], 0.1)
+            if not ready:
+                if self.proc.poll() is not None:
+                    break
+                if chunks:
+                    return "".join(chunks)
+                continue
+            try:
+                data = os.read(self.master, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            chunks.append(data.decode("utf-8", "replace"))
+        return "".join(chunks)
+
+    def start(self) -> str:
+        master, slave = pty.openpty()
+        self.master = master
+        self.proc = subprocess.Popen(self.command + ["auth", "login"], stdin=slave, stdout=slave, stderr=slave,
+                                     env=self.env, start_new_session=True, close_fds=True)
+        os.close(slave)
+        deadline, seen = time.monotonic() + self.url_timeout, ""
+        while time.monotonic() < deadline:
+            seen += self._read(deadline)
+            match = URL.search(ANSI.sub("", seen))
+            if match:
+                return match.group(0)
+            if self.proc.poll() is not None:
+                break
+        self.close()
+        raise LoginError("claude auth login did not show a URL")
+
+    def submit(self, code: str, timeout: float = 60.0) -> bool:
+        if not valid_code(code):
+            raise LoginError("code has invalid characters or length")
+        if self.proc is None or self.master is None:
+            raise LoginError("login not started")
+        os.write(self.master, (code + "\r").encode())
+        deadline = time.monotonic() + timeout
+        while self.proc.poll() is None and time.monotonic() < deadline:
+            self._read(min(deadline, time.monotonic() + 0.5))
+        ok = self.proc.poll() == 0
+        self.close()
+        return ok
+
+    def close(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, 15)
+            except ProcessLookupError:
+                pass
+            self.proc.wait(timeout=5)
+        if self.master is not None:
+            try:
+                os.close(self.master)
+            except OSError:
+                pass
+            self.master = None

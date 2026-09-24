@@ -16,7 +16,8 @@ if sys.argv[1:3] == ["auth", "status"]:
     print(json.dumps({"loggedIn": MODE != "logged_out", "subscriptionType": "max"}))
     sys.exit()
 if sys.argv[1:3] == ["auth", "login"]:
-    print("Open this URL to sign in:\r\n\x1b[1mhttps://claude.ai/oauth/authorize?code=true&state=abc\x1b[0m")
+    print("Opening browser to sign in…")
+    print("If the browser didn't open, visit: \x1b[1mhttps://claude.ai/oauth/authorize?code=true&state=abc\x1b[0m")
     print("Paste code here if prompted > ", end="", flush=True)
     code = sys.stdin.readline().strip()
     sys.exit(0 if code == "good-code#state" else 1)
