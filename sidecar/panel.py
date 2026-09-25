@@ -44,8 +44,11 @@ STATUS = """{message}<dl>
 Agent SDK credit balance, and keep extra usage OFF.</p>
 {forms}"""
 
+# The username field is only there so password managers (iOS AutoFill, LastPass) recognise a login
+# form; the server ignores it and authenticates by tailnet identity plus password.
 LOGIN = """{message}<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">
-<input type="password" name="password" autocomplete="current-password" required>
+<label>User <input type="text" name="username" autocomplete="username" value="{username}" readonly></label>
+<label>Password <input type="password" name="password" autocomplete="current-password" required></label>
 <button>Log in</button></form>"""
 
 DISABLED = "Login is disabled: no panel password is set. Re-run install.sh to set one."
@@ -122,7 +125,8 @@ def create_panel_app(rt: Runtime, *, login_factory: Callable[[], LoginSession], 
         return len(failures) >= MAX_FAILURES
 
     def login_page(message: str, status_code: int = 200) -> HTMLResponse:
-        return _page(LOGIN.format(message=_message(message), csrf=csrf_token), status_code)
+        return _page(LOGIN.format(message=_message(message), csrf=csrf_token,
+                                  username=html.escape(rt.config.owner_login)), status_code)
 
     def done(message: str = "") -> Response:
         state["message"] = message

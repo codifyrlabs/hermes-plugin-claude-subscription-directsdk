@@ -111,6 +111,20 @@ async def test_index_redirects_to_login_without_session(env):
     assert page.status_code == 200 and 'type="password"' in page.text
 
 
+async def test_login_form_has_autofill_username_that_server_ignores(env):
+    _, http, _, _, _ = env
+    page = await http.get("/login", headers=ID)
+    assert 'autocomplete="username"' in page.text and f'value="{OWNER}"' in page.text
+    assert 'autocomplete="current-password"' in page.text
+    # A browser submits the username too; it must neither grant anything nor matter to a valid login.
+    r = await http.post("/login", data={"csrf": _token(page.text), "username": OWNER, "password": WRONG}, headers=ID)
+    assert r.status_code == 401
+    page = await http.get("/login", headers=ID)
+    r = await http.post("/login", data={"csrf": _token(page.text), "username": "someone-else", "password": PASSWORD},
+                        headers=ID)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+
+
 async def test_actions_require_session(env):
     rt, http, _, _, _ = env
     page = await http.get("/login", headers=ID)
