@@ -195,7 +195,11 @@ def create_panel_app(rt: Runtime, *, login_factory: Callable[[], LoginSession], 
                  _form("/cap", "Set monthly cap (USD)", csrf_token,
                        f'<input name="cap_usd" inputmode="decimal" placeholder="max {MAX_CAP_USD:.0f}">')]
         if state["url"]:
-            forms.append(f'<p>Open <a href="{html.escape(state["url"])}">{html.escape(state["url"])}</a>, approve, '
+            url = state["url"]
+            # googlechromes:// hands the link to Chrome on iOS; a home-screen shortcut otherwise can't open it.
+            chrome = (f'<a href="{html.escape("googlechromes://" + url[len("https://"):])}">Open in Chrome</a> '
+                      f"(phone), or " if url.startswith("https://") else "")
+            forms.append(f'<p>{chrome}open <a href="{html.escape(url)}">{html.escape(url)}</a>, approve, '
                          f"then paste the code:</p>"
                          + _form("/reauth/code", "Submit code", csrf_token, '<input name="code" autocomplete="off">'))
         else:

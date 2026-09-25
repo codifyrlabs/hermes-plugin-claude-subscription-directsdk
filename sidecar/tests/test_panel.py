@@ -241,6 +241,9 @@ async def test_reauth_flow_escapes_url_and_passes_code(env):
     assert r.status_code == 303
     page = await http.get("/", headers=ID)
     assert "&lt;script&gt;" in page.text and "<script>" not in page.text
+    # Chrome deep link for the phone, plus the plain https link for a desktop browser.
+    assert 'href="googlechromes://claude.ai/oauth/authorize?x=&lt;script&gt;"' in page.text
+    assert 'href="https://claude.ai/oauth/authorize?x=&lt;script&gt;"' in page.text
     await _post(http, "/reauth/code", csrf, code="good-code#state")
     assert login.codes == ["good-code#state"]
     page = await http.get("/", headers=ID)
