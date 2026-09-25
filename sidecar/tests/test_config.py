@@ -57,3 +57,7 @@ def test_short_session_secret_rejected_without_echo(secret):
     with pytest.raises(ConfigError) as exc:
         SidecarConfig.from_env(_env(CLAUDE_SIDECAR_PANEL_SESSION_SECRET=secret))
     assert secret not in str(exc.value) and "32" in str(exc.value)
+
+
+def test_client_group_can_be_disabled():
+    assert SidecarConfig.from_env(_env(CLAUDE_SIDECAR_CLIENT_GROUP="")).client_group == ""

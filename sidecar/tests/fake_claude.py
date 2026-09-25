@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Fake `claude` for sidecar tests. Modes (env CLAUDE_SUBSCRIPTION_DIRECTSDK_FAKE_MODE): text | tool | hang."""
 import json
 import os

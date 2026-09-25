@@ -1,0 +1,35 @@
+[Unit]
+Description=Claude subscription sidecar (claude -p over a unix socket)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claudesub
+Group=claudesub
+SupplementaryGroups=claudesub-clients
+WorkingDirectory=/opt/claude-sidecar/src
+EnvironmentFile=/etc/claude-sidecar/env
+Environment=HOME=/var/lib/claudesub
+Environment=PATH=/var/lib/claudesub/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CLAUDE_SIDECAR_CLAUDE_COMMAND=/var/lib/claudesub/.local/bin/claude
+ExecStart=/opt/claude-sidecar/venv/bin/python -m sidecar
+Restart=always
+RestartSec=2
+RuntimeDirectory=claude-sidecar
+RuntimeDirectoryMode=0711
+ReadWritePaths=/var/lib/claudesub
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+LimitCORE=0
+CPUQuota=100%
+MemoryMax=1G
+TasksMax=256
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

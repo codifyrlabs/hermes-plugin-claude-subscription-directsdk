@@ -49,6 +49,7 @@ class SidecarConfig:
             claude_command=env.get("CLAUDE_SIDECAR_CLAUDE_COMMAND", "claude"),
             allowed_models=models,
             default_cap_usd=float(env.get("CLAUDE_SIDECAR_DEFAULT_CAP_USD", "150")),
+            client_group=env.get("CLAUDE_SIDECAR_CLIENT_GROUP", "claudesub-clients"),
             panel_password_hash=env.get("CLAUDE_SIDECAR_PANEL_PASSWORD_HASH", "").strip(),
             panel_session_secret=secret,
         )
