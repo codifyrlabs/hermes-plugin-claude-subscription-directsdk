@@ -208,8 +208,9 @@ async def test_status_page_shows_state(env):
     rt.ledger.add(12.5, {"model": "claude-sonnet-5"})
     page = await http.get("/", headers=ID)
     assert page.status_code == 200
-    for text in ("2.1.263", "$12.50", "$150.00", "logged in", "idle", "check the Claude console", "Log out"):
+    for text in ("2.1.263", "$12.50", "$150.00", "Logged in", "Idle", "Max session pool", "Log out everywhere"):
         assert text in page.text, text
+    assert "Agent SDK credit" not in page.text
 
 
 async def test_pause_resume_cap(env):
@@ -237,12 +238,16 @@ async def test_cancel_and_restart(env):
 async def test_reauth_flow_escapes_url_and_passes_code(env):
     _, http, _, login, _ = env
     csrf = await _csrf(http)
+    # One button slot: "Re-auth Claude login" becomes "Open in Chrome" in the same card, same style.
+    before = (await http.get("/", headers=ID)).text
+    assert '<h3>Claude login</h3>' in before and '<button class="primary">Re-auth Claude login</button>' in before
     r = await _post(http, "/reauth/start", csrf)
     assert r.status_code == 303
     page = await http.get("/", headers=ID)
-    assert "&lt;script&gt;" in page.text and "<script>" not in page.text
+    assert '<h3>Claude login</h3>' in page.text and "Re-auth Claude login</button>" not in page.text
+    assert "&lt;script&gt;" in page.text and "x=<script>" not in page.text
     # Chrome deep link for the phone, plus the plain https link for a desktop browser.
-    assert 'href="googlechromes://claude.ai/oauth/authorize?x=&lt;script&gt;"' in page.text
+    assert 'class="btn primary" href="googlechromes://claude.ai/oauth/authorize?x=&lt;script&gt;">Open in Chrome</a>' in page.text
     assert 'href="https://claude.ai/oauth/authorize?x=&lt;script&gt;"' in page.text
     await _post(http, "/reauth/code", csrf, code="good-code#state")
     assert login.codes == ["good-code#state"]
@@ -337,3 +342,59 @@ async def test_overlapping_reauth_start_orphans_nothing(tmp_path):
     assert len(sessions) == 1
     page = (await http.get("/", headers=ID)).text
     assert "https://claude.ai/oauth/authorize?x=1" in page
+
+
+async def test_logout_revokes_copied_session_cookies(env):
+    _, http, _, _, _ = env
+    csrf = await _csrf(http)
+    copied = http.cookies[SESSION_COOKIE]
+    await _post(http, "/logout", csrf)
+    r = await http.get("/", headers={**ID, "Cookie": f"{SESSION_COOKIE}={copied}"})
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+
+
+async def test_sessions_survive_restart_but_not_a_logout_before_it(tmp_path):
+    _, http, _, _, _ = _make(tmp_path)
+    csrf = await _csrf(http)
+    kept = http.cookies[SESSION_COOKIE]
+    _, restarted, _, _, _ = _make(tmp_path)
+    assert (await restarted.get("/", headers={**ID, "Cookie": f"{SESSION_COOKIE}={kept}"})).status_code == 200
+
+    await _post(http, "/logout", csrf)
+    _, again, _, _, _ = _make(tmp_path)
+    r = await again.get("/", headers={**ID, "Cookie": f"{SESSION_COOKIE}={kept}"})
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+
+
+async def test_generation_file_is_owner_only(env, tmp_path):
+    _, http, _, _, _ = env
+    await _post(http, "/logout", await _csrf(http))
+    assert (tmp_path / "panel_generation").stat().st_mode & 0o777 == 0o600
+
+
+async def test_corrupt_generation_file_fails_closed(env, tmp_path):
+    _, http, _, _, _ = env
+    await _csrf(http)
+    (tmp_path / "panel_generation").write_text("not a number")
+    r = await http.get("/", headers=ID)
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+    page = await http.get("/login", headers=ID)
+    assert "panel_generation" in page.text
+    r = await http.post("/login", data={"csrf": _token(page.text), "password": PASSWORD}, headers=ID)
+    assert r.status_code == 503 and SESSION_COOKIE not in r.headers.get("set-cookie", "")
+
+
+async def test_pages_carry_console_name_label_and_theme_toggle(env):
+    _, http, _, _, _ = env
+    page = (await http.get("/login", headers=ID)).text
+    assert "<title>Hermes Claude Console</title>" in page
+    assert '<meta name="apple-mobile-web-app-title" content="HC Console">' in page
+    assert 'id="theme-toggle"' in page and "localStorage" in page and "prefers-color-scheme: dark" in page
+
+
+async def test_last_request_is_summarised(env):
+    rt, http, _, _, _ = env
+    await _csrf(http)
+    rt.ledger.add(0.5, {"model": "claude-opus-5-5", "stream": True, "outcome": "ok", "duration_ms": 4210})
+    page = (await http.get("/", headers=ID)).text
+    assert "claude-opus-5-5 · ok · 4.2 s" in page
