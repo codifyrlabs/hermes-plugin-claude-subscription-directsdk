@@ -7,7 +7,7 @@ import hmac
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -54,6 +54,31 @@ def _classify(exc: BaseException) -> str:
     if isinstance(exc, ValueError):
         return "invalid_request"
     return "upstream_error"
+
+
+_END = object()
+
+
+async def _prime(result: Any) -> Any:
+    try:
+        return await result.__anext__()
+    except StopAsyncIteration:
+        return _END
+    except BaseException:
+        await result.aclose()
+        raise
+
+
+class _SettlingStreamingResponse(StreamingResponse):
+    def __init__(self, content: Any, settle: Callable[[str, Any], Awaitable[None]], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._settle = settle
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._settle("client_disconnected", None)
 
 
 def create_api_app(rt: Runtime) -> FastAPI:
@@ -119,6 +144,9 @@ def create_api_app(rt: Runtime) -> FastAPI:
         started = time.monotonic()
         try:
             result = await rt.client.chat.completions.create(**body)
+            # The plugin's stream is lazy: logged-out, missing-binary and bad-request errors only surface on the
+            # first chunk. Pull it before committing to a 200, so the caller gets a real status and can fall back.
+            first = await _prime(result) if stream else None
         except Exception as exc:  # noqa: BLE001 - mapped to a typed error, logged by type only
             kind = _classify(exc)
             finish(model, stream, kind, None, started)
@@ -134,14 +162,34 @@ def create_api_app(rt: Runtime) -> FastAPI:
                 finish(model, False, outcome, usage, started)
             return JSONResponse(data)
 
+        settled = False
+
+        async def settle(outcome: str, usage: Any) -> None:
+            nonlocal settled
+            if settled:
+                return
+            settled = True
+            try:
+                if outcome != "ok":
+                    await result.aclose()
+            finally:
+                finish(model, True, outcome, usage, started)
+
         async def events():
             usage, outcome = None, "error"
+
+            def sse(chunk: Any) -> str:
+                nonlocal usage
+                data = _dump(chunk)
+                if data.get("usage"):
+                    usage = data["usage"]
+                return f"data: {json.dumps(data)}\n\n"
+
             try:
-                async for chunk in result:
-                    data = _dump(chunk)
-                    if data.get("usage"):
-                        usage = data["usage"]
-                    yield f"data: {json.dumps(data)}\n\n"
+                if first is not _END:
+                    yield sse(first)
+                    async for chunk in result:
+                        yield sse(chunk)
                 yield "data: [DONE]\n\n"
                 outcome = "ok"
             except (GeneratorExit, asyncio.CancelledError):
@@ -152,10 +200,10 @@ def create_api_app(rt: Runtime) -> FastAPI:
                 logger.info("stream error_type=%s", type(exc).__name__)
                 yield f"data: {json.dumps({'error': {'type': outcome, 'message': outcome.replace('_', ' ')}})}\n\n"
             finally:
-                if outcome != "ok":
-                    await result.aclose()
-                finish(model, True, outcome, usage, started)
+                await settle(outcome, usage)
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        # The claude process is already running, so the slot must be settled even if the client goes away
+        # before the body iterator is ever started (an unstarted generator never runs its finally).
+        return _SettlingStreamingResponse(events(), settle, media_type="text/event-stream")
 
     return app

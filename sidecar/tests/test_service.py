@@ -253,3 +253,45 @@ async def test_ledger_write_oserror_still_releases_slot(tmp_path, stream):
         second = await http.post("/v1/chat/completions", json=_body(stream=stream), headers=AUTH)
     assert first.status_code == 200 and second.status_code == 200, (first.text, second.text)
     assert not rt.gate.busy
+
+
+async def test_stream_logged_out_is_503_before_any_bytes(tmp_path):
+    rt = _runtime(tmp_path, mode="logged_out")
+    async with _http(rt) as http:
+        r = await http.post("/v1/chat/completions", json=_body(stream=True), headers=AUTH)
+    assert r.status_code == 503 and r.json()["error"]["type"] == "logged_out"
+    assert not rt.gate.busy
+    assert rt.ledger.state().last_request["outcome"] == "logged_out"
+
+
+async def test_stream_missing_binary_is_503_before_any_bytes(tmp_path):
+    rt = _runtime(tmp_path)
+    rt.client = directsdk.Client(command="/does/not/exist", env={"PATH": "/usr/bin", "HOME": str(tmp_path)})
+    async with _http(rt) as http:
+        r = await http.post("/v1/chat/completions", json=_body(stream=True), headers=AUTH)
+    assert r.status_code == 503 and r.json()["error"]["type"] == "claude_missing"
+    assert not rt.gate.busy
+
+
+async def test_stream_response_settles_even_if_body_never_starts():
+    from sidecar.service import _SettlingStreamingResponse
+
+    settled, started = [], []
+
+    async def body():
+        started.append(True)
+        yield "data: x\n\n"
+
+    async def settle(outcome, usage):
+        settled.append(outcome)
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        raise OSError("client went away before headers")
+
+    response = _SettlingStreamingResponse(body(), settle, media_type="text/event-stream")
+    with pytest.raises(Exception):
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+    assert settled == ["client_disconnected"] and not started
