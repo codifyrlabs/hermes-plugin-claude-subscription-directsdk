@@ -45,3 +45,15 @@ def test_env_example_has_no_real_values():
     assert "CLAUDE_SIDECAR_API_KEY=" in lines
     assert "CLAUDE_SIDECAR_PANEL_PASSWORD_HASH=" in lines and "CLAUDE_SIDECAR_PANEL_SESSION_SECRET=" in lines
     assert all(l.endswith("=") or "@" in l or l.startswith("CLAUDE_SIDECAR_ALLOWED_MODELS=") for l in lines)
+
+
+def test_install_script_warns_when_owner_login_differs():
+    text = (DEPLOY / "install.sh").read_text()
+    assert "sed -n 's/^CLAUDE_SIDECAR_OWNER_LOGIN=//p' /etc/claude-sidecar/env" in text
+    assert '"$CURRENT_OWNER" != "$OWNER"' in text and "WARNING" in text
+
+
+def test_install_script_checks_both_panel_login_lines():
+    text = (DEPLOY / "install.sh").read_text()
+    assert "grep -q '^CLAUDE_SIDECAR_PANEL_PASSWORD_HASH=.' /etc/claude-sidecar/env" in text
+    assert "grep -q '^CLAUDE_SIDECAR_PANEL_SESSION_SECRET=.' /etc/claude-sidecar/env" in text
