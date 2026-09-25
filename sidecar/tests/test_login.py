@@ -49,3 +49,12 @@ def test_no_url_times_out():
             s.start()
     finally:
         s.close()
+
+
+def test_pty_is_wide_so_the_url_does_not_wrap():
+    script = "import os; print('https://x.example/cols=%d' % os.get_terminal_size(0).columns, flush=True)"
+    s = LoginSession([sys.executable, "-c", script], {"PATH": "/usr/bin"}, url_timeout=10)
+    try:
+        assert s.start() == "https://x.example/cols=500"
+    finally:
+        s.close()

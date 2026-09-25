@@ -1,16 +1,21 @@
 """Drives `claude auth login` on a pty: shows the URL, then feeds the code the owner pasted. Never logs either."""
 from __future__ import annotations
 
+import fcntl
 import os
 import pty
 import re
 import select
+import struct
 import subprocess
+import termios
 import time
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
 URL = re.compile(r"https://[^\s\x1b\x07]+")
 CODE = re.compile(r"^[\x21-\x7e]{1,2048}$")
+# A wide window, so the CLI never wraps the long OAuth URL (URL stops at the first line break).
+PTY_ROWS, PTY_COLS = 50, 500
 
 
 class LoginError(RuntimeError):
@@ -49,6 +54,7 @@ class LoginSession:
     def start(self) -> str:
         master, slave = pty.openpty()
         self.master = master
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", PTY_ROWS, PTY_COLS, 0, 0))
         self.proc = subprocess.Popen(self.command + ["auth", "login"], stdin=slave, stdout=slave, stderr=slave,
                                      env=self.env, start_new_session=True, close_fds=True)
         os.close(slave)
