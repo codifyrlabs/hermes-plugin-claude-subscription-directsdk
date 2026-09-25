@@ -77,6 +77,7 @@ def create_panel_app(rt: Runtime, *, login_factory: Callable[[], LoginSession], 
     csrf_token = secrets.token_urlsafe(32)
     state = {"login": None, "url": None, "message": ""}
     lock = threading.Lock()
+    reauth_starting = asyncio.Lock()
     failures: deque[float] = deque()
 
     def owner(request: Request) -> bool:
@@ -257,18 +258,21 @@ def create_panel_app(rt: Runtime, *, login_factory: Callable[[], LoginSession], 
     async def reauth_start(request: Request):
         if await form(request) is None:
             return _forbidden()
-        with lock:
-            if state["login"] is not None:
-                state["login"].close()
-            session = login_factory()
-        try:
-            url = await asyncio.to_thread(session.start)
-        except LoginError:
+        # One start at a time, so an overlapping post can never orphan a half-started session.
+        if reauth_starting.locked():
+            return done("Re-auth is already starting; wait a moment.")
+        async with reauth_starting:
             with lock:
-                state["login"], state["url"] = None, None
-            return done("Re-auth could not start: no login URL appeared.")
-        with lock:
-            state["login"], state["url"] = session, url
+                previous, state["login"], state["url"] = state["login"], None, None
+            if previous is not None:
+                await asyncio.to_thread(previous.close)
+            session = login_factory()
+            try:
+                url = await asyncio.to_thread(session.start)
+            except LoginError:
+                return done("Re-auth could not start: no login URL appeared.")
+            with lock:
+                state["login"], state["url"] = session, url
         logger.info("panel reauth started")
         return done()
 

@@ -6,6 +6,7 @@ import os
 import pty
 import re
 import select
+import signal
 import struct
 import subprocess
 import termios
@@ -27,6 +28,8 @@ def valid_code(code: str) -> bool:
 
 
 class LoginSession:
+    term_grace = 5.0  # seconds to wait after SIGTERM (and again after SIGKILL)
+
     def __init__(self, command: list[str], env: dict[str, str], url_timeout: float = 30.0):
         self.command, self.env, self.url_timeout = list(command), dict(env), url_timeout
         self.proc: subprocess.Popen | None = None
@@ -83,15 +86,24 @@ class LoginSession:
         return ok
 
     def close(self) -> None:
-        if self.proc is not None and self.proc.poll() is None:
-            try:
-                os.killpg(self.proc.pid, 15)
-            except ProcessLookupError:
-                pass
-            self.proc.wait(timeout=5)
-        if self.master is not None:
-            try:
-                os.close(self.master)
-            except OSError:
-                pass
-            self.master = None
+        try:
+            if self.proc is not None and self.proc.poll() is None:
+                self._signal(signal.SIGTERM)
+                try:
+                    self.proc.wait(timeout=self.term_grace)
+                except subprocess.TimeoutExpired:
+                    self._signal(signal.SIGKILL)
+                    self.proc.wait(timeout=self.term_grace)
+        finally:
+            if self.master is not None:
+                try:
+                    os.close(self.master)
+                except OSError:
+                    pass
+                self.master = None
+
+    def _signal(self, sig: int) -> None:
+        try:
+            os.killpg(self.proc.pid, sig)
+        except ProcessLookupError:
+            pass

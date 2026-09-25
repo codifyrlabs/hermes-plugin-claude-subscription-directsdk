@@ -1,4 +1,6 @@
+import asyncio
 import re
+import threading
 
 import httpx
 import pytest
@@ -253,3 +255,68 @@ async def test_ledger_actions_show_message_when_ledger_unwritable(env, path, fie
     r = await _post(http, path, csrf, **fields)
     assert r.status_code == 303 and r.headers["location"] == "/"
     assert "spend ledger" in (await http.get("/", headers=ID)).text
+
+
+class TrackedLogin:
+    def __init__(self, gate=None):
+        self.gate, self.entered = gate, threading.Event()
+        self.closed_on = []
+
+    def start(self):
+        self.entered.set()
+        if self.gate is not None:
+            self.gate.wait(10)
+        return "https://claude.ai/oauth/authorize?x=1"
+
+    def submit(self, code, timeout=60.0):
+        return True
+
+    def close(self):
+        self.closed_on.append(threading.current_thread() is threading.main_thread())
+
+
+def _reauth_app(tmp_path, factory):
+    config = SidecarConfig(api_key="k" * 40, owner_login=OWNER, state_dir=tmp_path,
+                           panel_password_hash=HASH, panel_session_secret="s" * 64)
+    rt = Runtime(config=config, ledger=SpendLedger(tmp_path / "l.json", 150.0), client=FakeClient(), gate=Gate())
+    app = create_panel_app(rt, login_factory=factory, status_fn=lambda: {"logged_in": True},
+                           restart_hook=lambda: None, now=lambda: 1_000_000.0)
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://panel")
+
+
+async def test_reauth_restart_closes_previous_session_off_the_event_loop(tmp_path):
+    sessions = []
+
+    def factory():
+        sessions.append(TrackedLogin())
+        return sessions[-1]
+
+    http = _reauth_app(tmp_path, factory)
+    csrf = await _csrf(http)
+    assert (await _post(http, "/reauth/start", csrf)).status_code == 303
+    assert (await _post(http, "/reauth/start", csrf)).status_code == 303
+    assert len(sessions) == 2
+    assert sessions[0].closed_on == [False]  # closed once, in a worker thread
+    assert sessions[1].closed_on == []
+
+
+async def test_overlapping_reauth_start_orphans_nothing(tmp_path):
+    gate = threading.Event()
+    sessions = []
+
+    def factory():
+        sessions.append(TrackedLogin(gate))
+        return sessions[-1]
+
+    http = _reauth_app(tmp_path, factory)
+    csrf = await _csrf(http)
+    first = asyncio.create_task(_post(http, "/reauth/start", csrf))
+    while not sessions or not sessions[0].entered.is_set():
+        await asyncio.sleep(0.01)
+    second = await _post(http, "/reauth/start", csrf)
+    assert second.status_code == 303
+    gate.set()
+    assert (await first).status_code == 303
+    assert len(sessions) == 1
+    page = (await http.get("/", headers=ID)).text
+    assert "https://claude.ai/oauth/authorize?x=1" in page

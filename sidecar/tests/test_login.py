@@ -58,3 +58,14 @@ def test_pty_is_wide_so_the_url_does_not_wrap():
         assert s.start() == "https://x.example/cols=500"
     finally:
         s.close()
+
+
+def test_close_kills_a_child_that_ignores_sigterm():
+    script = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+              "print('https://x.example/ok', flush=True); time.sleep(60)")
+    s = LoginSession([sys.executable, "-c", script], {"PATH": "/usr/bin"}, url_timeout=10)
+    s.term_grace = 0.5
+    s.start()
+    s.close()
+    assert s.proc.poll() is not None
+    assert s.master is None
