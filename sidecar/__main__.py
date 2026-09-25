@@ -32,8 +32,13 @@ def bind_unix_socket(path: Path, mode: int, group: str | None) -> socket.socket:
     return sock
 
 
+# After this, uvicorn cancels in-flight handlers (which kills claude and frees the slot) instead of waiting.
+GRACEFUL_SHUTDOWN_SECONDS = 5
+
+
 def _server(app) -> uvicorn.Server:
-    return uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=False, lifespan="off"))
+    return uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=False, lifespan="off",
+                                         timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS))
 
 
 async def serve_both(api_app, api_sock, panel_app, panel_sock) -> None:

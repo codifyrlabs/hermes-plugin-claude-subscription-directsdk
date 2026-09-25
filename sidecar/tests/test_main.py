@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 
-from sidecar.__main__ import bind_unix_socket
+from sidecar.__main__ import GRACEFUL_SHUTDOWN_SECONDS, _server, bind_unix_socket
 
 FORK_ROOT = Path(__file__).resolve().parents[2]
 
@@ -53,3 +53,9 @@ def test_main_serves_both_sockets_and_stops_on_sigterm():
             proc.kill()
     out = proc.stdout.read().decode()
     assert "k" * 40 not in out
+
+
+def test_servers_bound_graceful_shutdown():
+    # An in-flight claude request must not hold SIGTERM (or a panel restart) until systemd's SIGKILL.
+    assert GRACEFUL_SHUTDOWN_SECONDS <= 10
+    assert _server(object()).config.timeout_graceful_shutdown == GRACEFUL_SHUTDOWN_SECONDS
