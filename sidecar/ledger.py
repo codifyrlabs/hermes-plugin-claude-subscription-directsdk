@@ -44,10 +44,14 @@ class SpendLedger:
         return self.now().strftime("%Y-%m")
 
     def _load(self) -> LedgerState:
-        if not self.path.exists():
-            return LedgerState(self._month(), 0.0, self.default_cap_usd, False)
         try:
-            raw = json.loads(self.path.read_text())
+            text = self.path.read_text()
+        except FileNotFoundError:
+            return LedgerState(self._month(), 0.0, self.default_cap_usd, False)
+        except OSError as exc:
+            raise LedgerCorrupt(f"ledger unreadable: {type(exc).__name__}") from None
+        try:
+            raw = json.loads(text)
             state = LedgerState(
                 month=raw["month"], spent_usd=raw["spent_usd"], cap_usd=raw["cap_usd"], paused=raw["paused"],
                 unknown_cost_requests=raw.get("unknown_cost_requests", 0), last_request=raw.get("last_request"),

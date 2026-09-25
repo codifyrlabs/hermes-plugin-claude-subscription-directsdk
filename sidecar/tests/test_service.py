@@ -353,3 +353,12 @@ async def test_caller_timeout_is_ignored(tmp_path, stream):
         r = await http.post("/v1/chat/completions", json=_body(stream=stream, timeout=-1), headers=AUTH)
     assert r.status_code == 200, r.text
     assert not rt.gate.busy
+
+
+async def test_unreadable_ledger_file_is_503(tmp_path):
+    rt = _runtime(tmp_path)
+    (tmp_path / "ledger.json").mkdir()
+    async with _http(rt) as http:
+        r = await http.post("/v1/chat/completions", json=_body(), headers=AUTH)
+    assert r.status_code == 503 and r.json()["error"]["type"] == "ledger_unreadable"
+    assert not rt.gate.busy

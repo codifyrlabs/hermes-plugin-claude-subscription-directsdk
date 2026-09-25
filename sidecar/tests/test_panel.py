@@ -229,3 +229,27 @@ async def test_reauth_flow_escapes_url_and_passes_code(env):
     assert login.codes == ["good-code#state"]
     page = await http.get("/", headers=ID)
     assert "Re-auth succeeded" in page.text
+
+
+@pytest.mark.parametrize("path, fields", [("/pause", {}), ("/resume", {}), ("/cap", {"cap_usd": "120"})])
+async def test_ledger_actions_show_message_when_ledger_corrupt(env, tmp_path, path, fields):
+    rt, http, *_ = env
+    csrf = await _csrf(http)
+    (tmp_path / "l.json").write_text("{")
+    r = await _post(http, path, csrf, **fields)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert "spend ledger" in (await http.get("/", headers=ID)).text
+
+
+@pytest.mark.parametrize("path, fields", [("/pause", {}), ("/resume", {}), ("/cap", {"cap_usd": "120"})])
+async def test_ledger_actions_show_message_when_ledger_unwritable(env, path, fields):
+    rt, http, *_ = env
+    csrf = await _csrf(http)
+
+    def read_only(state):
+        raise OSError(30, "Read-only file system")
+
+    rt.ledger._save = read_only
+    r = await _post(http, path, csrf, **fields)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert "spend ledger" in (await http.get("/", headers=ID)).text

@@ -64,6 +64,9 @@ def _form(action: str, label: str, csrf: str, extra: str = "") -> str:
             f"{extra}<button>{html.escape(label)}</button></form>")
 
 
+LEDGER_FAILED = "{} failed: the spend ledger is unreadable or unwritable (the API refuses requests until it is fixed)."
+
+
 def _forbidden() -> Response:
     return Response("forbidden", status_code=403)
 
@@ -207,14 +210,20 @@ def create_panel_app(rt: Runtime, *, login_factory: Callable[[], LoginSession], 
     async def pause(request: Request):
         if await form(request) is None:
             return _forbidden()
-        rt.ledger.set_paused(True)
+        try:
+            rt.ledger.set_paused(True)
+        except (LedgerCorrupt, OSError):
+            return done(LEDGER_FAILED.format("Pause"))
         return done("Paused.")
 
     @app.post("/resume")
     async def resume(request: Request):
         if await form(request) is None:
             return _forbidden()
-        rt.ledger.set_paused(False)
+        try:
+            rt.ledger.set_paused(False)
+        except (LedgerCorrupt, OSError):
+            return done(LEDGER_FAILED.format("Resume"))
         return done("Resumed.")
 
     @app.post("/cancel")
@@ -240,6 +249,8 @@ def create_panel_app(rt: Runtime, *, login_factory: Callable[[], LoginSession], 
             rt.ledger.set_cap(float(fields.get("cap_usd", "")))
         except ValueError:
             return Response(f"cap must be a number from 0 to {MAX_CAP_USD:.0f}", status_code=400)
+        except (LedgerCorrupt, OSError):
+            return done(LEDGER_FAILED.format("Setting the cap"))
         return done("Cap updated.")
 
     @app.post("/reauth/start")

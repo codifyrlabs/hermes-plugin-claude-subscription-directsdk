@@ -89,3 +89,12 @@ def test_writes_are_atomic_and_private(tmp_path):
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"
     assert json.loads(path.read_text())["spent_usd"] == 1.5
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_unreadable_ledger_file_fails_closed(tmp_path):
+    (tmp_path / "ledger.json").mkdir()  # reading raises IsADirectoryError (an OSError), whoever runs the test
+    ledger, _ = _ledger(tmp_path)
+    with pytest.raises(LedgerCorrupt):
+        ledger.state()
+    with pytest.raises(LedgerCorrupt):
+        ledger.blocked_reason()
