@@ -65,16 +65,19 @@ def create_api_app(rt: Runtime) -> FastAPI:
         return scheme.lower() == "bearer" and hmac.compare_digest(token.encode(), rt.config.api_key.encode())
 
     def finish(model: str, stream: bool, outcome: str, usage: Any, started: float) -> None:
-        cost = _cost(usage)
-        prompt, completion = _tokens(usage)
-        duration_ms = int((time.monotonic() - started) * 1000)
+        # The slot is released whatever the ledger write raises (disk full, read-only, EACCES).
         try:
-            rt.ledger.add(cost, {"model": model, "stream": stream, "outcome": outcome, "duration_ms": duration_ms})
-        except LedgerCorrupt:
-            logger.error("ledger write failed: ledger_unreadable")
-        rt.gate.release()
-        logger.info("request model=%s stream=%s outcome=%s cost_usd=%s prompt_tokens=%s completion_tokens=%s duration_ms=%d",
-                    model, stream, outcome, cost, prompt, completion, duration_ms)
+            cost = _cost(usage)
+            prompt, completion = _tokens(usage)
+            duration_ms = int((time.monotonic() - started) * 1000)
+            try:
+                rt.ledger.add(cost, {"model": model, "stream": stream, "outcome": outcome, "duration_ms": duration_ms})
+            except Exception as exc:  # noqa: BLE001 - logged by type only; the request itself already ran
+                logger.error("ledger write failed error_type=%s", type(exc).__name__)
+            logger.info("request model=%s stream=%s outcome=%s cost_usd=%s prompt_tokens=%s completion_tokens=%s "
+                        "duration_ms=%d", model, stream, outcome, cost, prompt, completion, duration_ms)
+        finally:
+            rt.gate.release()
 
     @app.get("/health")
     async def health() -> dict:
@@ -123,8 +126,12 @@ def create_api_app(rt: Runtime) -> FastAPI:
             message = str(exc)[:200] if kind == "invalid_request" else kind.replace("_", " ")
             return _error(kind, message)
         if not stream:
-            data = _dump(result)
-            finish(model, False, "ok", data.get("usage"), started)
+            outcome, usage = "error", None
+            try:
+                data = _dump(result)
+                usage, outcome = data.get("usage"), "ok"
+            finally:
+                finish(model, False, outcome, usage, started)
             return JSONResponse(data)
 
         async def events():

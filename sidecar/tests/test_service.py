@@ -237,3 +237,19 @@ async def test_logs_hold_no_secrets(tmp_path, caplog):
     for needle in ("Bearer", "sk-ant-", "oauth", KEY, "PROMPT-MARKER", "hello"):
         assert needle not in text, needle
     assert "outcome=ok" in text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_ledger_write_oserror_still_releases_slot(tmp_path, stream):
+    rt = _runtime(tmp_path)
+
+    def full_disk(cost, meta):
+        raise OSError(28, "No space left on device")
+
+    rt.ledger.add = full_disk
+    async with _http(rt) as http:
+        first = await http.post("/v1/chat/completions", json=_body(stream=stream), headers=AUTH)
+        assert not rt.gate.busy
+        second = await http.post("/v1/chat/completions", json=_body(stream=stream), headers=AUTH)
+    assert first.status_code == 200 and second.status_code == 200, (first.text, second.text)
+    assert not rt.gate.busy
