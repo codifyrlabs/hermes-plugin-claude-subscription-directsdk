@@ -343,3 +343,13 @@ async def test_non_stream_disconnect_releases_slot_and_kills_child(tmp_path):
         server.should_exit = True
         await serve_task
         shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_caller_timeout_is_ignored(tmp_path, stream):
+    # directsdk reads kwargs["timeout"] before its own; the sidecar's request_timeout must stay the ceiling.
+    rt = _runtime(tmp_path)
+    async with _http(rt) as http:
+        r = await http.post("/v1/chat/completions", json=_body(stream=stream, timeout=-1), headers=AUTH)
+    assert r.status_code == 200, r.text
+    assert not rt.gate.busy

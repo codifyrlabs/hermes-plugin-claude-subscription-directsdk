@@ -146,6 +146,8 @@ def create_api_app(rt: Runtime) -> FastAPI:
             return _error("monthly_cap", "monthly spend cap reached")
         if not rt.gate.try_acquire(model):
             return _error("busy", "a request is already in flight")
+        # The plugin reads a caller's `timeout` before its own; the sidecar's request_timeout is the only ceiling.
+        body.pop("timeout", None)
         stream = bool(body.get("stream"))
         started = time.monotonic()
 
