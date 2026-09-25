@@ -61,3 +61,14 @@ def test_short_session_secret_rejected_without_echo(secret):
 
 def test_client_group_can_be_disabled():
     assert SidecarConfig.from_env(_env(CLAUDE_SIDECAR_CLIENT_GROUP="")).client_group == ""
+
+
+@pytest.mark.parametrize("cap", ["nan", "inf", "-inf", "-1", "200.01", "1000", "abc", ""])
+def test_bad_default_cap_rejected(cap):
+    with pytest.raises(ConfigError):
+        SidecarConfig.from_env(_env(CLAUDE_SIDECAR_DEFAULT_CAP_USD=cap))
+
+
+@pytest.mark.parametrize("cap, expected", [("0", 0.0), ("42.5", 42.5), ("200", 200.0)])
+def test_default_cap_in_range_accepted(cap, expected):
+    assert SidecarConfig.from_env(_env(CLAUDE_SIDECAR_DEFAULT_CAP_USD=cap)).default_cap_usd == expected
