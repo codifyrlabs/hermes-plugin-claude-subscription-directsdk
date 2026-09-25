@@ -57,6 +57,12 @@ def _classify(exc: BaseException) -> str:
 
 
 _END = object()
+DISCONNECT_POLL_SECONDS = 0.25
+
+
+async def _until_disconnected(request: Request) -> None:
+    while not await request.is_disconnected():
+        await asyncio.sleep(DISCONNECT_POLL_SECONDS)
 
 
 async def _prime(result: Any) -> Any:
@@ -142,11 +148,49 @@ def create_api_app(rt: Runtime) -> FastAPI:
             return _error("busy", "a request is already in flight")
         stream = bool(body.get("stream"))
         started = time.monotonic()
-        try:
+
+        async def start() -> tuple[Any, Any]:
             result = await rt.client.chat.completions.create(**body)
             # The plugin's stream is lazy: logged-out, missing-binary and bad-request errors only surface on the
             # first chunk. Pull it before committing to a 200, so the caller gets a real status and can fall back.
-            first = await _prime(result) if stream else None
+            return result, (await _prime(result) if stream else None)
+
+        async def abandon(work: asyncio.Task) -> Any:
+            """Cancel the plugin call (directsdk kills claude's process group); return its usage if it finished."""
+            work.cancel()
+            (outcome,) = await asyncio.gather(work, return_exceptions=True)
+            if isinstance(outcome, BaseException):
+                return None
+            result, _ = outcome
+            if stream:
+                await result.aclose()
+                return None
+            try:
+                return _dump(result).get("usage")
+            except Exception:  # noqa: BLE001 - cost is simply unknown then
+                return None
+
+        # uvicorn never cancels a handler when an HTTP/1.1 client goes away, so watch for it: otherwise an abandoned
+        # request keeps claude running (and the slot held) until request_timeout.
+        work = asyncio.create_task(start())
+        watch = asyncio.create_task(_until_disconnected(request))
+        try:
+            await asyncio.wait({work, watch}, return_when=asyncio.FIRST_COMPLETED)
+            if not work.done() and watch.exception() is not None:
+                await asyncio.wait({work})
+        except asyncio.CancelledError:
+            # Server shutdown cancelled the handler: stop claude and free the slot before unwinding.
+            watch.cancel()
+            finish(model, stream, "cancelled", await abandon(work), started)
+            raise
+        watch.cancel()
+        if not work.done():
+            finish(model, stream, "client_disconnected", await abandon(work), started)
+            logger.info("request abandoned outcome=client_disconnected")
+            return JSONResponse({"error": {"type": "client_disconnected", "message": "client disconnected"}},
+                                status_code=499)
+        try:
+            result, first = work.result()
         except Exception as exc:  # noqa: BLE001 - mapped to a typed error, logged by type only
             kind = _classify(exc)
             finish(model, stream, kind, None, started)

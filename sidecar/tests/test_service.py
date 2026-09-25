@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -295,3 +296,50 @@ async def test_stream_response_settles_even_if_body_never_starts():
     with pytest.raises(Exception):
         await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
     assert settled == ["client_disconnected"] and not started
+
+
+async def test_non_stream_disconnect_releases_slot_and_kills_child(tmp_path):
+    # Same real-uvicorn-on-UDS harness as the stream test: ASGITransport can't deliver a mid-request disconnect.
+    import psutil
+
+    pid_file = tmp_path / "pid"
+    rt = _runtime(tmp_path, mode="hang", extra_env={"CLAUDE_SUBSCRIPTION_DIRECTSDK_FAKE_PID_FILE": str(pid_file)})
+
+    socket_dir = tempfile.mkdtemp(prefix="sc", dir="/tmp")
+    socket_path = os.path.join(socket_dir, "s")
+    config = uvicorn.Config(create_api_app(rt), uds=socket_path, log_level="critical", lifespan="off")
+    server = uvicorn.Server(config)
+    serve_task = asyncio.create_task(server.serve())
+    try:
+        while not server.started:
+            await asyncio.sleep(0.01)
+
+        transport = httpx.AsyncHTTPTransport(uds=socket_path)
+        async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as http:
+            post = asyncio.create_task(http.post("/v1/chat/completions", json=_body(), headers=AUTH))
+            deadline = time.monotonic() + 15
+            while not pid_file.exists() and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert pid_file.exists() and rt.gate.busy
+            post.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await post
+
+        child = int(pid_file.read_text())
+
+        def child_alive():
+            try:
+                return psutil.Process(child).status() != psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                return False
+
+        deadline = time.monotonic() + 15
+        while (rt.gate.busy or child_alive()) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert not rt.gate.busy
+        assert not child_alive()
+        assert rt.ledger.state().last_request["outcome"] == "client_disconnected"
+    finally:
+        server.should_exit = True
+        await serve_task
+        shutil.rmtree(socket_dir, ignore_errors=True)
