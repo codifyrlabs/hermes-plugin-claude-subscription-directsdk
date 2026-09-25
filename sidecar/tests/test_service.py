@@ -211,6 +211,7 @@ async def test_stream_disconnect_releases_slot_and_kills_child(tmp_path):
     finally:
         server.should_exit = True
         await serve_task
+        shutil.rmtree(socket_dir, ignore_errors=True)
 
     child = int(pid_file.read_text())
 

@@ -1,4 +1,5 @@
 import os
+import shutil
 import signal
 import socket
 import stat
@@ -25,6 +26,7 @@ def test_bind_sets_mode_and_replaces_stale_file():
         assert stat.S_ISSOCK(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o660
     finally:
         sock.close()
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_main_serves_both_sockets_and_stops_on_sigterm():
@@ -51,6 +53,8 @@ def test_main_serves_both_sockets_and_stops_on_sigterm():
     finally:
         if proc.poll() is None:
             proc.kill()
+        shutil.rmtree(run, ignore_errors=True)
+        shutil.rmtree(state, ignore_errors=True)
     out = proc.stdout.read().decode()
     assert "k" * 40 not in out
 
