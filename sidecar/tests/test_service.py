@@ -363,3 +363,39 @@ async def test_unreadable_ledger_file_is_503(tmp_path):
         r = await http.post("/v1/chat/completions", json=_body(), headers=AUTH)
     assert r.status_code == 503 and r.json()["error"]["type"] == "ledger_unreadable"
     assert not rt.gate.busy
+
+
+# directsdk's RuntimeError messages open with a fixed label, but the text after
+# it can carry upstream output or request fragments. Only the label (and a
+# numeric status) may reach the journal.
+SECRET_TAIL = "PROMPT-MARKER sk-ant-leak"
+
+
+@pytest.mark.parametrize("message, label, status", [
+    (f"Native API error: {SECRET_TAIL}", "native_api_error", None),
+    (f"Incomplete upstream response (first upstream attempt: status 529, capture incomplete, "
+     f"native retries denied: 2, upstream said: {SECRET_TAIL})", "incomplete_upstream_response", "529"),
+    (f"Invalid native stream-json output: '{SECRET_TAIL}'", "invalid_stream_json", None),
+    ("Claude request cancelled", "request_cancelled", None),
+    (f"{SECRET_TAIL} something new", "unlisted", None),
+])
+def test_error_label_keeps_only_the_fixed_prefix(message, label, status):
+    from sidecar.service import error_label
+
+    assert error_label(RuntimeError(message)) == (label, status)
+
+
+async def test_upstream_error_logs_label_not_message(tmp_path, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    rt = _runtime(tmp_path)
+
+    async def boom(**_):
+        raise RuntimeError(f"Native API error: {SECRET_TAIL}")
+
+    monkeypatch.setattr(rt.client.chat.completions, "create", boom)
+    async with _http(rt) as http:
+        r = await http.post("/v1/chat/completions", json=_body(), headers=AUTH)
+
+    assert r.status_code == 502
+    assert "request error_type=RuntimeError error_label=native_api_error status=-" in caplog.text
+    assert "PROMPT-MARKER" not in caplog.text and "sk-ant-" not in caplog.text
