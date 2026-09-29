@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 import time
 from typing import Any, Awaitable, Callable
 
@@ -44,6 +45,44 @@ def _tokens(usage: Any) -> tuple[Any, Any]:
     if not isinstance(usage, dict):
         return None, None
     return usage.get("prompt_tokens"), usage.get("completion_tokens")
+
+
+# The fixed labels directsdk's RuntimeError messages open with. Only these reach
+# the journal: the text after a label can carry upstream output or request
+# fragments, which the metadata-only rule above keeps out of logs.
+_ERROR_LABELS = (
+    ("Native API error", "native_api_error"),
+    ("Incomplete upstream response", "incomplete_upstream_response"),
+    ("Incomplete native response", "incomplete_native_response"),
+    ("Invalid native stream-json output", "invalid_stream_json"),
+    ("Native exited before replay acknowledgment", "exited_before_replay_ack"),
+    ("Native history replay not supported", "replay_not_supported"),
+    ("Native returned a tool outside the current host inventory", "tool_outside_inventory"),
+    ("Native request failed", "native_request_failed"),
+    ("Native result missing complete token usage", "missing_token_usage"),
+    ("Native final text differs from incremental stream", "final_text_mismatch"),
+    ("Native response missing", "native_response_missing"),
+    ("Claude request cancelled", "request_cancelled"),
+    ("Claude client is closed", "client_closed"),
+)
+# directsdk writes "status <code>" itself before any upstream text, so the first
+# match is its own; only the digits are kept.
+_STATUS = re.compile(r"\bstatus (\d{3})\b")
+
+
+def error_label(exc: BaseException) -> tuple[str, str | None]:
+    """A loggable (label, HTTP status) for an exception; never its message."""
+    text = str(exc)
+    for prefix, label in _ERROR_LABELS:
+        if text.startswith(prefix):
+            status = _STATUS.search(text)
+            return label, status.group(1) if status else None
+    return "unlisted", None
+
+
+def _label_fields(exc: BaseException) -> tuple[str, str]:
+    label, status = error_label(exc)
+    return label, status or "-"
 
 
 def _classify(exc: BaseException) -> str:
@@ -196,7 +235,7 @@ def create_api_app(rt: Runtime) -> FastAPI:
         except Exception as exc:  # noqa: BLE001 - mapped to a typed error, logged by type only
             kind = _classify(exc)
             finish(model, stream, kind, None, started)
-            logger.info("request error_type=%s", type(exc).__name__)
+            logger.info("request error_type=%s error_label=%s status=%s", type(exc).__name__, *_label_fields(exc))
             message = str(exc)[:200] if kind == "invalid_request" else kind.replace("_", " ")
             return _error(kind, message)
         if not stream:
@@ -243,7 +282,7 @@ def create_api_app(rt: Runtime) -> FastAPI:
                 raise
             except Exception as exc:  # noqa: BLE001 - reported in-band; headers are already sent
                 outcome = _classify(exc)
-                logger.info("stream error_type=%s", type(exc).__name__)
+                logger.info("stream error_type=%s error_label=%s status=%s", type(exc).__name__, *_label_fields(exc))
                 yield f"data: {json.dumps({'error': {'type': outcome, 'message': outcome.replace('_', ' ')}})}\n\n"
             finally:
                 await settle(outcome, usage)
